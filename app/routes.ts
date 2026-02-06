@@ -8,5 +8,6 @@ export default [
   route("courses/:slug/lessons/:lessonId", "routes/courses.$slug.lessons.$lessonId.tsx"),
   route("instructor", "routes/instructor.tsx"),
   route("instructor/new", "routes/instructor.new.tsx"),
+  route("instructor/:courseId", "routes/instructor.$courseId.tsx"),
   route("api/switch-user", "routes/api.switch-user.ts"),
 ] satisfies RouteConfig;

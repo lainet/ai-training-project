@@ -164,10 +164,10 @@ export default function InstructorDashboard({
                 </div>
               </CardContent>
               <CardFooter>
-                <Link to={`/courses/${course.slug}`} className="w-full">
+                <Link to={`/instructor/${course.id}`} className="w-full">
                   <Button className="w-full" variant="outline">
                     <BookOpen className="mr-2 size-4" />
-                    View Course
+                    Edit Course
                   </Button>
                 </Link>
               </CardFooter>

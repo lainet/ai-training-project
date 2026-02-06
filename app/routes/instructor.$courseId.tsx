@@ -1,0 +1,457 @@
+import { useState, useRef, useEffect } from "react";
+import { Link, useFetcher } from "react-router";
+import type { Route } from "./+types/instructor.$courseId";
+import {
+  getCourseById,
+  getCourseWithDetails,
+  updateCourse,
+  updateCourseStatus,
+  getLessonCountForCourse,
+} from "~/services/courseService";
+import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
+import { getCurrentUserId } from "~/lib/session";
+import { getUserById } from "~/services/userService";
+import { CourseStatus, UserRole } from "~/db/schema";
+import { Card, CardContent, CardHeader } from "~/components/ui/card";
+import { Button } from "~/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
+  ArrowLeft,
+  BookOpen,
+  Circle,
+  Clock,
+  Pencil,
+  Users,
+} from "lucide-react";
+import { data } from "react-router";
+
+export function meta({ data: loaderData }: Route.MetaArgs) {
+  const title = loaderData?.course?.title ?? "Edit Course";
+  return [
+    { title: `Edit: ${title} — Ralph` },
+    { name: "description", content: `Edit course: ${title}` },
+  ];
+}
+
+export async function loader({ params, request }: Route.LoaderArgs) {
+  const currentUserId = await getCurrentUserId(request);
+
+  if (!currentUserId) {
+    throw data("Select a user from the DevUI panel to manage courses.", {
+      status: 401,
+    });
+  }
+
+  const user = getUserById(currentUserId);
+
+  if (!user || user.role !== UserRole.Instructor) {
+    throw data("Only instructors can access this page.", {
+      status: 403,
+    });
+  }
+
+  const courseId = parseInt(params.courseId, 10);
+  if (isNaN(courseId)) {
+    throw data("Invalid course ID.", { status: 400 });
+  }
+
+  const course = getCourseWithDetails(courseId);
+
+  if (!course) {
+    throw data("Course not found.", { status: 404 });
+  }
+
+  if (course.instructorId !== currentUserId) {
+    throw data("You can only edit your own courses.", { status: 403 });
+  }
+
+  const lessonCount = getLessonCountForCourse(courseId);
+  const enrollmentCount = getEnrollmentCountForCourse(courseId);
+
+  return { course, lessonCount, enrollmentCount };
+}
+
+export async function action({ params, request }: Route.ActionArgs) {
+  const currentUserId = await getCurrentUserId(request);
+
+  if (!currentUserId) {
+    throw data("You must be logged in.", { status: 401 });
+  }
+
+  const user = getUserById(currentUserId);
+  if (!user || user.role !== UserRole.Instructor) {
+    throw data("Only instructors can edit courses.", { status: 403 });
+  }
+
+  const courseId = parseInt(params.courseId, 10);
+  if (isNaN(courseId)) {
+    throw data("Invalid course ID.", { status: 400 });
+  }
+
+  const course = getCourseById(courseId);
+  if (!course) {
+    throw data("Course not found.", { status: 404 });
+  }
+
+  if (course.instructorId !== currentUserId) {
+    throw data("You can only edit your own courses.", { status: 403 });
+  }
+
+  const formData = await request.formData();
+  const intent = formData.get("intent") as string;
+
+  if (intent === "update-title") {
+    const title = (formData.get("title") as string)?.trim();
+    if (!title) {
+      return data({ error: "Title cannot be empty." }, { status: 400 });
+    }
+    updateCourse(courseId, title, course.description);
+    return { success: true, field: "title" };
+  }
+
+  if (intent === "update-description") {
+    const description = (formData.get("description") as string)?.trim();
+    if (!description) {
+      return data(
+        { error: "Description cannot be empty." },
+        { status: 400 }
+      );
+    }
+    updateCourse(courseId, course.title, description);
+    return { success: true, field: "description" };
+  }
+
+  if (intent === "update-status") {
+    const status = formData.get("status") as CourseStatus;
+    if (
+      !status ||
+      ![CourseStatus.Draft, CourseStatus.Published, CourseStatus.Archived].includes(status)
+    ) {
+      return data({ error: "Invalid status." }, { status: 400 });
+    }
+    updateCourseStatus(courseId, status);
+    return { success: true, field: "status" };
+  }
+
+  throw data("Invalid action.", { status: 400 });
+}
+
+function InlineEditableTitle({
+  value,
+  courseId,
+}: {
+  value: string;
+  courseId: number;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fetcher = useFetcher();
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  // Update local state when server responds with new data
+  useEffect(() => {
+    setEditValue(value);
+  }, [value]);
+
+  function handleSave() {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== value) {
+      fetcher.submit(
+        { intent: "update-title", title: trimmed },
+        { method: "post" }
+      );
+    }
+    setIsEditing(false);
+  }
+
+  function handleCancel() {
+    setEditValue(value);
+    setIsEditing(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      handleCancel();
+    }
+  }
+
+  if (isEditing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onBlur={handleSave}
+        onKeyDown={handleKeyDown}
+        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-3xl font-bold outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setIsEditing(true)}
+      className="group flex w-full items-start gap-2 rounded-md px-3 py-1.5 text-left hover:bg-muted"
+    >
+      <h1 className="flex-1 text-3xl font-bold">{value}</h1>
+      <Pencil className="mt-2 size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
+  );
+}
+
+function InlineEditableDescription({
+  value,
+  courseId,
+}: {
+  value: string;
+  courseId: number;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(value);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fetcher = useFetcher();
+
+  useEffect(() => {
+    if (isEditing && textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.select();
+      // Auto-resize
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height =
+        textareaRef.current.scrollHeight + "px";
+    }
+  }, [isEditing]);
+
+  useEffect(() => {
+    setEditValue(value);
+  }, [value]);
+
+  function handleSave() {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== value) {
+      fetcher.submit(
+        { intent: "update-description", description: trimmed },
+        { method: "post" }
+      );
+    }
+    setIsEditing(false);
+  }
+
+  function handleCancel() {
+    setEditValue(value);
+    setIsEditing(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      handleCancel();
+    }
+  }
+
+  if (isEditing) {
+    return (
+      <div>
+        <textarea
+          ref={textareaRef}
+          value={editValue}
+          onChange={(e) => {
+            setEditValue(e.target.value);
+            e.target.style.height = "auto";
+            e.target.style.height = e.target.scrollHeight + "px";
+          }}
+          onBlur={handleSave}
+          onKeyDown={handleKeyDown}
+          rows={3}
+          className="w-full resize-none rounded-md border border-input bg-background px-3 py-1.5 text-sm text-muted-foreground outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          Press Ctrl+Enter to save, Escape to cancel
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setIsEditing(true)}
+      className="group flex w-full items-start gap-2 rounded-md px-3 py-1.5 text-left hover:bg-muted"
+    >
+      <p className="flex-1 text-sm text-muted-foreground">{value}</p>
+      <Pencil className="mt-0.5 size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
+  );
+}
+
+function statusBadgeColor(status: string) {
+  switch (status) {
+    case CourseStatus.Published:
+      return "text-green-800 dark:text-green-400";
+    case CourseStatus.Draft:
+      return "text-yellow-800 dark:text-yellow-400";
+    case CourseStatus.Archived:
+      return "text-gray-800 dark:text-gray-400";
+    default:
+      return "";
+  }
+}
+
+export default function InstructorCourseEditor({
+  loaderData,
+}: Route.ComponentProps) {
+  const { course, lessonCount, enrollmentCount } = loaderData;
+  const statusFetcher = useFetcher();
+
+  function handleStatusChange(newStatus: string) {
+    statusFetcher.submit(
+      { intent: "update-status", status: newStatus },
+      { method: "post" }
+    );
+  }
+
+  return (
+    <div className="p-6 lg:p-8">
+      {/* Breadcrumb */}
+      <nav className="mb-6 text-sm text-muted-foreground">
+        <Link to="/instructor" className="hover:text-foreground">
+          My Courses
+        </Link>
+        <span className="mx-2">/</span>
+        <span className="text-foreground">{course.title}</span>
+      </nav>
+
+      <Link
+        to="/instructor"
+        className="mb-4 inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="mr-1 size-4" />
+        Back to My Courses
+      </Link>
+
+      {/* Course Header with inline editing */}
+      <div className="mb-8">
+        <InlineEditableTitle value={course.title} courseId={course.id} />
+        <div className="mt-2">
+          <InlineEditableDescription
+            value={course.description}
+            courseId={course.id}
+          />
+        </div>
+
+        {/* Stats row */}
+        <div className="mt-4 flex flex-wrap items-center gap-4 px-3 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <BookOpen className="size-4" />
+            {lessonCount} {lessonCount === 1 ? "lesson" : "lessons"}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Users className="size-4" />
+            {enrollmentCount}{" "}
+            {enrollmentCount === 1 ? "student" : "students"}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            Slug: /courses/{course.slug}
+          </span>
+        </div>
+      </div>
+
+      {/* Status + Actions */}
+      <div className="mb-8 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Status:</span>
+          <Select
+            value={course.status}
+            onValueChange={handleStatusChange}
+          >
+            <SelectTrigger className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={CourseStatus.Draft}>Draft</SelectItem>
+              <SelectItem value={CourseStatus.Published}>
+                Published
+              </SelectItem>
+              <SelectItem value={CourseStatus.Archived}>
+                Archived
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <Link to={`/courses/${course.slug}`}>
+          <Button variant="outline" size="sm">
+            View Public Page
+          </Button>
+        </Link>
+      </div>
+
+      {/* Course Structure (read-only for now) */}
+      <div>
+        <h2 className="mb-4 text-2xl font-bold">Course Content</h2>
+        {course.modules.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <BookOpen className="mx-auto mb-3 size-8 text-muted-foreground/50" />
+              <p className="text-muted-foreground">
+                No modules or lessons yet. Module management is coming soon.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            {course.modules.map((mod) => (
+              <Card key={mod.id}>
+                <CardHeader>
+                  <h3 className="font-semibold">{mod.title}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {mod.lessons.length}{" "}
+                    {mod.lessons.length === 1 ? "lesson" : "lessons"}
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <ul className="space-y-2">
+                    {mod.lessons.map((lesson) => (
+                      <li key={lesson.id}>
+                        <div className="flex items-center gap-3 px-3 py-2 text-sm">
+                          <Circle className="size-4 shrink-0 text-muted-foreground" />
+                          <span className="flex-1">{lesson.title}</span>
+                          {lesson.durationMinutes && (
+                            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Clock className="size-3" />
+                              {lesson.durationMinutes}m
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
