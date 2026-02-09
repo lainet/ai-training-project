@@ -14,69 +14,79 @@ export function MonacoMarkdownEditor({
   onSave,
 }: MonacoMarkdownEditorProps) {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
+  onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
 
-  const handleMount: OnMount = useCallback(
-    (editor, monaco) => {
-      editorRef.current = editor;
+  const handleMount: OnMount = useCallback((editor, monaco) => {
+    editorRef.current = editor;
 
-      monaco.editor.defineTheme("cadence-dark", {
-        base: "vs-dark",
-        inherit: true,
-        rules: [],
-        colors: {
-          "editor.background": "#0a0a0a",
-          "editor.foreground": "#e5e5e5",
-          "editorLineNumber.foreground": "#525252",
-          "editorLineNumber.activeForeground": "#a3a3a3",
-          "editor.selectionBackground": "#262626",
-          "editor.lineHighlightBackground": "#171717",
-          "editorCursor.foreground": "#e5e5e5",
-          "editorWidget.background": "#171717",
-          "editorWidget.border": "#262626",
-          "input.background": "#171717",
-          "input.border": "#262626",
-          "focusBorder": "#525252",
-        },
-      });
-      monaco.editor.setTheme("cadence-dark");
+    monaco.editor.defineTheme("cadence-dark", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [],
+      colors: {
+        "editor.background": "#0a0a0a",
+        "editor.foreground": "#e5e5e5",
+        "editorLineNumber.foreground": "#525252",
+        "editorLineNumber.activeForeground": "#a3a3a3",
+        "editor.selectionBackground": "#262626",
+        "editor.lineHighlightBackground": "#171717",
+        "editorCursor.foreground": "#e5e5e5",
+        "editorWidget.background": "#171717",
+        "editorWidget.border": "#262626",
+        "input.background": "#171717",
+        "input.border": "#262626",
+        "focusBorder": "#525252",
+      },
+    });
+    monaco.editor.setTheme("cadence-dark");
 
-      // Ctrl+S / Cmd+S to format with Prettier then save
-      editor.addCommand(
-        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-        async () => {
-          const currentValue = editor.getValue();
-          try {
-            const [prettier, markdownPlugin] = await Promise.all([
-              import("prettier/standalone"),
-              import("prettier/plugins/markdown"),
+    // Ctrl+S / Cmd+S to format with Prettier then save
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      async () => {
+        const currentValue = editor.getValue();
+        try {
+          const [prettier, markdownPlugin] = await Promise.all([
+            import("prettier/standalone"),
+            import("prettier/plugins/markdown"),
+          ]);
+          const formatted = await prettier.format(currentValue, {
+            parser: "markdown",
+            plugins: [markdownPlugin.default],
+            proseWrap: "preserve",
+            tabWidth: 2,
+          });
+          // Only update if formatting actually changed something
+          if (formatted !== currentValue) {
+            const position = editor.getPosition();
+            editor.executeEdits("prettier", [
+              {
+                range: editor.getModel()!.getFullModelRange(),
+                text: formatted,
+              },
             ]);
-            const formatted = await prettier.format(currentValue, {
-              parser: "markdown",
-              plugins: [markdownPlugin.default],
-              proseWrap: "preserve",
-              tabWidth: 2,
-            });
-            // Only update if formatting actually changed something
-            if (formatted !== currentValue) {
-              editor.setValue(formatted);
-              onChange(formatted);
+            if (position) {
+              editor.setPosition(position);
             }
-          } catch {
-            // If Prettier fails, just save as-is
+            onChangeRef.current(formatted);
           }
-          onSave?.();
+        } catch {
+          // If Prettier fails, just save as-is
         }
-      );
-    },
-    [onChange, onSave]
-  );
+        onSaveRef.current?.();
+      }
+    );
+  }, []);
 
   return (
     <div className="overflow-hidden rounded-md border border-input">
       <Editor
         height="500px"
         defaultLanguage="markdown"
-        value={value}
+        defaultValue={value}
         onChange={(v) => onChange(v ?? "")}
         onMount={handleMount}
         options={{
