@@ -296,7 +296,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               ) : (
                 enrollButton
               )}
-              <div className="space-y-2 text-sm text-muted-foreground">
+              <div className="space-y-2 pt-2 text-sm text-muted-foreground">
                 <div className="flex items-center gap-2">
                   <BookOpen className="size-4" />
                   <span>{lessonCount} lessons</span>
