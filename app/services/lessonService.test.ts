@@ -42,12 +42,12 @@ describe("lessonService", () => {
 
   describe("createLesson", () => {
     it("creates a lesson with explicit position", () => {
-      const lesson = createLesson(moduleId, "Lesson 1", "<p>Content</p>", null, 1, 30);
+      const lesson = createLesson(moduleId, "Lesson 1", "Some content", null, 1, 30);
 
       expect(lesson).toBeDefined();
       expect(lesson.title).toBe("Lesson 1");
       expect(lesson.moduleId).toBe(moduleId);
-      expect(lesson.content).toBe("<p>Content</p>");
+      expect(lesson.content).toBe("Some content");
       expect(lesson.position).toBe(1);
       expect(lesson.durationMinutes).toBe(30);
     });
@@ -126,37 +126,37 @@ describe("lessonService", () => {
 
   describe("updateLesson", () => {
     it("updates title when provided", () => {
-      const lesson = createLesson(moduleId, "Old", "<p>old</p>", null, 1, 10);
+      const lesson = createLesson(moduleId, "Old", "old content", null, 1, 10);
 
       const updated = updateLesson(lesson.id, "New Title", null, null, null);
       expect(updated!.title).toBe("New Title");
-      expect(updated!.content).toBe("<p>old</p>"); // unchanged
+      expect(updated!.content).toBe("old content"); // unchanged
     });
 
     it("updates content when provided", () => {
-      const lesson = createLesson(moduleId, "Title", "<p>old</p>", null, 1, null);
+      const lesson = createLesson(moduleId, "Title", "old content", null, 1, null);
 
-      const updated = updateLesson(lesson.id, null, "<p>new content</p>", null, null);
-      expect(updated!.content).toBe("<p>new content</p>");
+      const updated = updateLesson(lesson.id, null, "new content", null, null);
+      expect(updated!.content).toBe("new content");
       expect(updated!.title).toBe("Title"); // unchanged
     });
 
     it("updates multiple fields at once", () => {
       const lesson = createLesson(moduleId, "Old", null, null, 1, null);
 
-      const updated = updateLesson(lesson.id, "New", "<p>content</p>", "https://yt.com", 45);
+      const updated = updateLesson(lesson.id, "New", "some content", "https://yt.com", 45);
       expect(updated!.title).toBe("New");
-      expect(updated!.content).toBe("<p>content</p>");
+      expect(updated!.content).toBe("some content");
       expect(updated!.videoUrl).toBe("https://yt.com");
       expect(updated!.durationMinutes).toBe(45);
     });
 
     it("returns lesson unchanged when all fields are null", () => {
-      const lesson = createLesson(moduleId, "Same", "<p>same</p>", null, 1, 10);
+      const lesson = createLesson(moduleId, "Same", "same content", null, 1, 10);
 
       const result = updateLesson(lesson.id, null, null, null, null);
       expect(result!.title).toBe("Same");
-      expect(result!.content).toBe("<p>same</p>");
+      expect(result!.content).toBe("same content");
     });
   });
 
@@ -170,11 +170,11 @@ describe("lessonService", () => {
   });
 
   describe("updateLessonContent", () => {
-    it("updates just the content HTML", () => {
-      const lesson = createLesson(moduleId, "Title", "<p>old</p>", null, 1, null);
+    it("updates just the content", () => {
+      const lesson = createLesson(moduleId, "Title", "old content", null, 1, null);
 
-      const updated = updateLessonContent(lesson.id, "<p>new</p>");
-      expect(updated!.content).toBe("<p>new</p>");
+      const updated = updateLessonContent(lesson.id, "new content");
+      expect(updated!.content).toBe("new content");
     });
   });
 
