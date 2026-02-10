@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh issue create:*)",
+      "Bash(pnpm add:*)"
+    ]
+  }
+}
