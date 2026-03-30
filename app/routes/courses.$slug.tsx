@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Form, Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug";
 import {
@@ -42,6 +42,12 @@ import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
+import {
+  getAverageRatingForCourse,
+  getUserRatingForCourse,
+  upsertCourseReview,
+} from "~/services/reviewService";
+import { StarDisplay, StarPicker } from "~/components/star-rating";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -102,6 +108,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const { avgRating, ratingCount } = getAverageRatingForCourse(course.id);
+  const userRating =
+    currentUserId && enrolled
+      ? getUserRatingForCourse(currentUserId, course.id)
+      : null;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,10 +125,37 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    avgRating,
+    ratingCount,
+    userRating,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+export async function action({ params, request }: Route.ActionArgs) {
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    throw data("Unauthorized", { status: 401 });
+  }
+
+  const course = getCourseBySlug(params.slug);
+  if (!course) {
+    throw data("Course not found", { status: 404 });
+  }
+
+  if (!isUserEnrolled(currentUserId, course.id)) {
+    throw data("You must be enrolled to rate this course", { status: 403 });
+  }
+
+  const formData = await request.formData();
+  const rating = Number(formData.get("rating"));
+
+  if (!rating || rating < 1 || rating > 5 || !Number.isInteger(rating)) {
+    return { error: "Please select a rating between 1 and 5 stars." };
+  }
+
+  upsertCourseReview(currentUserId, course.id, rating);
+  return { success: true };
+}
 
 export function HydrateFallback() {
   return (
@@ -169,7 +208,7 @@ export function HydrateFallback() {
   );
 }
 
-export default function CourseDetail({ loaderData }: Route.ComponentProps) {
+export default function CourseDetail({ loaderData, actionData }: Route.ComponentProps) {
   const {
     course,
     salesCopyHtml,
@@ -181,6 +220,9 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    avgRating,
+    ratingCount,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -197,6 +239,15 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
       );
     }
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (actionData && "success" in actionData && actionData.success) {
+      toast.success("Your rating has been saved!");
+    }
+    if (actionData && "error" in actionData && actionData.error) {
+      toast.error(actionData.error);
+    }
+  }, [actionData]);
 
   const totalDuration = course.modules.reduce(
     (sum, mod) =>
@@ -301,7 +352,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
         <p className="mb-4 text-lg text-muted-foreground">
           {course.description}
         </p>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <UserAvatar
               name={course.instructorName}
@@ -320,6 +371,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
+          <StarDisplay rating={avgRating} ratingCount={ratingCount} />
         </div>
       </div>
 
@@ -359,7 +411,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
           </div>
         </div>
 
-        {/* Right column: progress/enrollment card */}
+        {/* Right column: progress/enrollment card + rating card */}
         <div className="space-y-6">
           <Card className="sticky top-6">
             <CardHeader>
@@ -444,6 +496,30 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               </div>
             </CardContent>
           </Card>
+
+          {/* Rating card — only for enrolled students */}
+          {enrolled && !isInstructor && (
+            <Card>
+              <CardHeader>
+                <h2 className="text-base font-semibold">Rate This Course</h2>
+              </CardHeader>
+              <CardContent>
+                <Form method="post">
+                  <div className="flex flex-col items-center gap-3">
+                    <StarPicker name="rating" defaultValue={userRating} />
+                    <p className="text-xs text-muted-foreground">
+                      {userRating
+                        ? "Update your rating"
+                        : "Share your experience"}
+                    </p>
+                    <Button type="submit" size="sm" className="w-full">
+                      {userRating ? "Update Rating" : "Submit Rating"}
+                    </Button>
+                  </div>
+                </Form>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>
