@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Form, Link, useSearchParams } from "react-router";
+import { useEffect, useState } from "react";
+import { Form, Link, useFetcher, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug";
 import {
@@ -31,10 +31,18 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  MessageSquare,
   Pencil,
   PlayCircle,
   Users,
 } from "lucide-react";
+
+const addCourseCommentSchema = z.object({
+  content: z
+    .string()
+    .min(1, "Comment cannot be empty.")
+    .max(2000, "Comment is too long (max 2000 characters)."),
+});
 import { CourseImage } from "~/components/course-image";
 import { UserAvatar } from "~/components/user-avatar";
 import { data, isRouteErrorResponse } from "react-router";
@@ -47,7 +55,12 @@ import {
   getUserRatingForCourse,
   upsertCourseReview,
 } from "~/services/reviewService";
+import {
+  createCourseComment,
+  getApprovedCourseComments,
+} from "~/services/commentService";
 import { StarDisplay, StarPicker } from "~/components/star-rating";
+import { z } from "zod";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -114,6 +127,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       ? getUserRatingForCourse(currentUserId, course.id)
       : null;
 
+  const comments = getApprovedCourseComments(course.id);
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -128,6 +143,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     avgRating,
     ratingCount,
     userRating,
+    comments,
   };
 }
 
@@ -142,19 +158,38 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Course not found", { status: 404 });
   }
 
-  if (!isUserEnrolled(currentUserId, course.id)) {
-    throw data("You must be enrolled to rate this course", { status: 403 });
-  }
-
   const formData = await request.formData();
-  const rating = Number(formData.get("rating"));
+  const intent = formData.get("intent");
 
-  if (!rating || rating < 1 || rating > 5 || !Number.isInteger(rating)) {
-    return { error: "Please select a rating between 1 and 5 stars." };
+  if (intent === "rate") {
+    if (!isUserEnrolled(currentUserId, course.id)) {
+      throw data("You must be enrolled to rate this course", { status: 403 });
+    }
+    const rating = Number(formData.get("rating"));
+    if (!rating || rating < 1 || rating > 5 || !Number.isInteger(rating)) {
+      return { error: "Please select a rating between 1 and 5 stars." };
+    }
+    upsertCourseReview(currentUserId, course.id, rating);
+    return { success: true };
   }
 
-  upsertCourseReview(currentUserId, course.id, rating);
-  return { success: true };
+  if (intent === "add-comment") {
+    if (!isUserEnrolled(currentUserId, course.id)) {
+      throw data("You must be enrolled to comment.", { status: 403 });
+    }
+    const content = formData.get("content");
+    if (!content || typeof content !== "string") {
+      return { commentError: "Comment cannot be empty." };
+    }
+    const parsed = addCourseCommentSchema.safeParse({ content });
+    if (!parsed.success) {
+      return { commentError: parsed.error.issues[0]?.message ?? "Invalid input." };
+    }
+    createCourseComment(course.id, currentUserId, parsed.data.content.trim());
+    return { commentSuccess: true };
+  }
+
+  throw data("Invalid action.", { status: 400 });
 }
 
 export function HydrateFallback() {
@@ -223,6 +258,7 @@ export default function CourseDetail({ loaderData, actionData }: Route.Component
     avgRating,
     ratingCount,
     userRating,
+    comments,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -246,6 +282,9 @@ export default function CourseDetail({ loaderData, actionData }: Route.Component
     }
     if (actionData && "error" in actionData && actionData.error) {
       toast.error(actionData.error);
+    }
+    if (actionData && "commentSuccess" in actionData && actionData.commentSuccess) {
+      toast.success("Comment submitted for review.");
     }
   }, [actionData]);
 
@@ -409,6 +448,17 @@ export default function CourseDetail({ loaderData, actionData }: Route.Component
               lessonProgressMap={lessonProgressMap}
             />
           </div>
+
+          <div className="mt-8">
+            <CourseCommentsSection
+              courseId={course.id}
+              courseSlug={course.slug}
+              comments={comments}
+              enrolled={enrolled}
+              currentUserId={currentUserId}
+              actionData={actionData}
+            />
+          </div>
         </div>
 
         {/* Right column: progress/enrollment card + rating card */}
@@ -505,6 +555,7 @@ export default function CourseDetail({ loaderData, actionData }: Route.Component
               </CardHeader>
               <CardContent>
                 <Form method="post">
+                  <input type="hidden" name="intent" value="rate" />
                   <div className="flex flex-col items-center gap-3">
                     <StarPicker name="rating" defaultValue={userRating} />
                     <p className="text-xs text-muted-foreground">
@@ -522,6 +573,119 @@ export default function CourseDetail({ loaderData, actionData }: Route.Component
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+type CourseCommentRow = {
+  id: number;
+  content: string;
+  createdAt: string;
+  userId: number;
+  userName: string;
+  userAvatarUrl: string | null;
+};
+
+function CourseCommentsSection({
+  courseId,
+  courseSlug,
+  comments,
+  enrolled,
+  currentUserId,
+  actionData,
+}: {
+  courseId: number;
+  courseSlug: string;
+  comments: CourseCommentRow[];
+  enrolled: boolean;
+  currentUserId: number | null;
+  actionData: Record<string, unknown> | null | undefined;
+}) {
+  const commentFetcher = useFetcher({ key: `course-comments-${courseId}` });
+  const isSubmitting = commentFetcher.state !== "idle";
+  const submitted =
+    commentFetcher.data && "commentSuccess" in commentFetcher.data && commentFetcher.data.commentSuccess;
+  const commentError =
+    commentFetcher.data && "commentError" in commentFetcher.data
+      ? String(commentFetcher.data.commentError)
+      : null;
+  const [content, setContent] = useState("");
+
+  useEffect(() => {
+    if (submitted) {
+      setContent("");
+    }
+  }, [submitted]);
+
+  return (
+    <div className="border-t pt-8">
+      <div className="mb-4 flex items-center gap-2">
+        <MessageSquare className="size-5 text-primary" />
+        <h2 className="text-2xl font-bold">
+          Discussion
+          {comments.length > 0 && (
+            <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+              ({comments.length})
+            </span>
+          )}
+        </h2>
+      </div>
+
+      {comments.length === 0 ? (
+        <p className="mb-6 text-sm text-muted-foreground">
+          No comments yet. Be the first to start the discussion!
+        </p>
+      ) : (
+        <div className="mb-6 space-y-4">
+          {comments.map((c) => (
+            <div key={c.id} className="flex gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+                {c.userName.charAt(0)}
+              </div>
+              <div className="flex-1">
+                <div className="mb-1 flex items-baseline gap-2">
+                  <span className="text-sm font-medium">{c.userName}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(c.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
+                <p className="text-sm text-foreground/90 whitespace-pre-wrap">{c.content}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {enrolled && currentUserId ? (
+        <commentFetcher.Form method="post" className="space-y-3">
+          <input type="hidden" name="intent" value="add-comment" />
+          <textarea
+            name="content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Ask a question or share your thoughts about this course…"
+            rows={3}
+            maxLength={2000}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+          />
+          {commentError && (
+            <p className="text-sm text-destructive">{commentError}</p>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">{content.length}/2000</span>
+            <Button type="submit" size="sm" disabled={isSubmitting || content.trim().length === 0}>
+              {isSubmitting ? "Submitting…" : "Post Comment"}
+            </Button>
+          </div>
+        </commentFetcher.Form>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          <Link to={`/courses/${courseSlug}/purchase`} className="underline hover:text-foreground">
+            Enroll in this course
+          </Link>{" "}
+          to join the discussion.
+        </p>
+      )}
     </div>
   );
 }

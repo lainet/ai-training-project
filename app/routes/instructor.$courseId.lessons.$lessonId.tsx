@@ -1,11 +1,17 @@
 import { useState, useEffect } from "react";
-import { Link, useFetcher, useBlocker } from "react-router";
+import { Form, Link, useFetcher, useBlocker } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/instructor.$courseId.lessons.$lessonId";
 import { getCourseById } from "~/services/courseService";
 import { getLessonById, updateLesson } from "~/services/lessonService";
 import { getModuleById } from "~/services/moduleService";
 import { getQuizByLessonId } from "~/services/quizService";
+import {
+  approveComment,
+  getCommentById,
+  getPendingCommentsByLesson,
+  rejectComment,
+} from "~/services/commentService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { UserRole } from "~/db/schema";
@@ -14,7 +20,7 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { MonacoMarkdownEditor } from "~/components/monaco-markdown-editor";
-import { AlertTriangle, ArrowLeft, ClipboardList, ExternalLink, Github, Save } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ClipboardList, ExternalLink, MessageSquare, Save, X } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
@@ -30,6 +36,11 @@ const updateLessonSchema = z.object({
   videoUrl: z.string().trim().optional(),
   durationMinutes: z.string().optional(),
   githubRepoUrl: z.string().trim().optional(),
+});
+
+const moderateCommentSchema = z.object({
+  intent: z.enum(["approve-comment", "reject-comment"]),
+  commentId: z.coerce.number().int(),
 });
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
@@ -88,8 +99,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   }
 
   const quiz = getQuizByLessonId(lessonId);
+  const pendingComments = getPendingCommentsByLesson(lessonId);
 
-  return { course, lesson, module: mod, quiz };
+  return { course, lesson, module: mod, quiz, pendingComments };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -126,22 +138,39 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   const formData = await request.formData();
-  const parsed = parseFormData(formData, updateLessonSchema);
+  const intent = formData.get("intent");
 
-  if (!parsed.success) {
-    return data({ error: Object.values(parsed.errors)[0] ?? "Invalid input." }, { status: 400 });
-  }
-
-  if (parsed.data.intent === "update-lesson") {
+  if (intent === "update-lesson") {
+    const parsed = parseFormData(formData, updateLessonSchema);
+    if (!parsed.success) {
+      return data({ error: Object.values(parsed.errors)[0] ?? "Invalid input." }, { status: 400 });
+    }
     const { content, videoUrl, durationMinutes: durationStr, githubRepoUrl } = parsed.data;
     const durationMinutes = durationStr ? parseInt(durationStr, 10) : null;
-
     if (durationMinutes !== null && (isNaN(durationMinutes) || durationMinutes < 0)) {
       return data({ error: "Duration must be a positive number." }, { status: 400 });
     }
-
     updateLesson(lessonId, null, content ?? null, videoUrl || null, durationMinutes, githubRepoUrl || null);
     return { success: true };
+  }
+
+  if (intent === "approve-comment" || intent === "reject-comment") {
+    const parsed = parseFormData(formData, moderateCommentSchema);
+    if (!parsed.success) {
+      return data({ error: "Invalid moderation request." }, { status: 400 });
+    }
+    const { commentId } = parsed.data;
+    const comment = getCommentById(commentId);
+    if (!comment || comment.lessonId !== lessonId) {
+      throw data("Comment not found.", { status: 404 });
+    }
+    if (intent === "approve-comment") {
+      approveComment(commentId);
+      return { moderationSuccess: "approved" as const };
+    } else {
+      rejectComment(commentId);
+      return { moderationSuccess: "rejected" as const };
+    }
   }
 
   throw data("Invalid action.", { status: 400 });
@@ -149,8 +178,9 @@ export async function action({ params, request }: Route.ActionArgs) {
 
 export default function InstructorLessonEditor({
   loaderData,
+  actionData,
 }: Route.ComponentProps) {
-  const { course, lesson, module: mod, quiz } = loaderData;
+  const { course, lesson, module: mod, quiz, pendingComments } = loaderData;
   const fetcher = useFetcher();
 
   const [content, setContent] = useState(lesson.content ?? "");
@@ -187,6 +217,13 @@ export default function InstructorLessonEditor({
       toast.error(fetcher.data.error);
     }
   }, [fetcher.state, fetcher.data]);
+
+  useEffect(() => {
+    if (actionData && "moderationSuccess" in actionData) {
+      if (actionData.moderationSuccess === "approved") toast.success("Comment approved.");
+      else if (actionData.moderationSuccess === "rejected") toast.success("Comment rejected.");
+    }
+  }, [actionData]);
 
   function handleSave() {
     fetcher.submit(
@@ -373,6 +410,59 @@ export default function InstructorLessonEditor({
                 {quiz ? "Edit Quiz" : "Create Quiz"}
               </Button>
             </Link>
+          </CardContent>
+        </Card>
+
+        {/* Comments Moderation */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <MessageSquare className="size-5" />
+              <h2 className="text-lg font-semibold">
+                Pending Comments
+                {pendingComments.length > 0 && (
+                  <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                    {pendingComments.length}
+                  </span>
+                )}
+              </h2>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Approve or reject student comments before they appear publicly.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {pendingComments.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No comments awaiting moderation.</p>
+            ) : (
+              <div className="space-y-4">
+                {pendingComments.map((c) => (
+                  <div key={c.id} className="rounded-lg border p-4">
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <span className="text-sm font-medium">{c.userName}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(c.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    <p className="mb-3 text-sm text-foreground/90 whitespace-pre-wrap">{c.content}</p>
+                    <div className="flex gap-2">
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="approve-comment" />
+                        <input type="hidden" name="commentId" value={c.id} />
+                        <Button type="submit" size="sm" variant="outline" className="text-green-700 hover:bg-green-50 hover:text-green-800 dark:text-green-400 dark:hover:bg-green-950">
+                          <Check className="mr-1.5 size-3.5" />Approve
+                        </Button>
+                      </Form>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="reject-comment" />
+                        <input type="hidden" name="commentId" value={c.id} />
+                        <Button type="submit" size="sm" variant="outline" className="text-red-700 hover:bg-red-50 hover:text-red-800 dark:text-red-400 dark:hover:bg-red-950">
+                          <X className="mr-1.5 size-3.5" />Reject
+                        </Button>
+                      </Form>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 

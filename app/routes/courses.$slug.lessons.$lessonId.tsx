@@ -40,6 +40,7 @@ import {
   Github,
   HelpCircle,
   MapPin,
+  MessageSquare,
   PlayCircle,
   ShieldAlert,
   XCircle,
@@ -54,6 +55,10 @@ import { z } from "zod";
 import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess, COUNTRIES } from "~/lib/ppp";
 import { findPurchase } from "~/services/purchaseService";
+import {
+  createComment,
+  getApprovedCommentsByLesson,
+} from "~/services/commentService";
 import { parseFormData, parseParams } from "~/lib/validation";
 
 const lessonParamsSchema = z.object({
@@ -63,6 +68,14 @@ const lessonParamsSchema = z.object({
 
 const markCompleteSchema = z.object({
   intent: z.literal("mark-complete"),
+});
+
+const addCommentSchema = z.object({
+  intent: z.literal("add-comment"),
+  content: z
+    .string()
+    .min(1, "Comment cannot be empty.")
+    .max(2000, "Comment is too long (max 2000 characters)."),
 });
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
@@ -203,6 +216,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const nextLesson =
     currentIndex < allLessons.length - 1 ? allLessons[currentIndex + 1] : null;
 
+  const comments = getApprovedCommentsByLesson(lessonId);
+
   // Check for quiz attached to this lesson
   const quizRecord = getQuizByLessonId(lessonId);
   let quiz: {
@@ -281,6 +296,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
   };
 }
 
@@ -303,6 +319,21 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
     return { success: true };
+  }
+
+  if (intent === "add-comment") {
+    if (!isUserEnrolled(currentUserId, course.id)) {
+      throw data("You must be enrolled to comment.", { status: 403 });
+    }
+    const parsed = parseFormData(formData, addCommentSchema);
+    if (!parsed.success) {
+      return data(
+        { commentError: Object.values(parsed.errors)[0] ?? "Invalid input." },
+        { status: 400 }
+      );
+    }
+    createComment(lessonId, currentUserId, parsed.data.content.trim());
+    return { commentSuccess: true };
   }
 
   if (intent === "submit-quiz") {
@@ -382,6 +413,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
   } = loaderData;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
@@ -592,6 +624,15 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
             </div>
           )}
 
+          {/* Comments Section */}
+          <LessonCommentsSection
+            lessonId={lesson.id}
+            courseSlug={course.slug}
+            comments={comments}
+            enrolled={enrolled}
+            currentUserId={currentUserId}
+          />
+
           {/* Prev/Next Navigation */}
           <div className="flex items-center justify-between border-t pt-6">
             {prevLesson ? (
@@ -641,6 +682,114 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+type CommentRow = {
+  id: number;
+  content: string;
+  createdAt: string;
+  userId: number;
+  userName: string;
+  userAvatarUrl: string | null;
+};
+
+function LessonCommentsSection({
+  lessonId,
+  courseSlug,
+  comments,
+  enrolled,
+  currentUserId,
+}: {
+  lessonId: number;
+  courseSlug: string;
+  comments: CommentRow[];
+  enrolled: boolean;
+  currentUserId: number | null;
+}) {
+  const commentFetcher = useFetcher({ key: `lesson-comments-${lessonId}` });
+  const isSubmitting = commentFetcher.state !== "idle";
+  const submitted = commentFetcher.data && "commentSuccess" in commentFetcher.data && commentFetcher.data.commentSuccess;
+  const commentError = commentFetcher.data && "commentError" in commentFetcher.data ? commentFetcher.data.commentError : null;
+  const [content, setContent] = useState("");
+
+  useEffect(() => {
+    if (submitted) {
+      toast.success("Comment submitted for review.");
+      setContent("");
+    }
+  }, [submitted]);
+
+  return (
+    <div className="mb-8 border-t pt-8">
+      <div className="mb-4 flex items-center gap-2">
+        <MessageSquare className="size-5 text-primary" />
+        <h2 className="text-xl font-semibold">
+          Discussion
+          {comments.length > 0 && (
+            <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+              ({comments.length})
+            </span>
+          )}
+        </h2>
+      </div>
+
+      {comments.length === 0 ? (
+        <p className="mb-6 text-sm text-muted-foreground">
+          No comments yet. Be the first to start the discussion!
+        </p>
+      ) : (
+        <div className="mb-6 space-y-4">
+          {comments.map((c) => (
+            <div key={c.id} className="flex gap-3">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+                {c.userName.charAt(0)}
+              </div>
+              <div className="flex-1">
+                <div className="mb-1 flex items-baseline gap-2">
+                  <span className="text-sm font-medium">{c.userName}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(c.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
+                <p className="text-sm text-foreground/90 whitespace-pre-wrap">{c.content}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {enrolled && currentUserId ? (
+        <commentFetcher.Form method="post" className="space-y-3">
+          <input type="hidden" name="intent" value="add-comment" />
+          <textarea
+            name="content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Ask a question or share your thoughts…"
+            rows={3}
+            maxLength={2000}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+          />
+          {commentError && (
+            <p className="text-sm text-destructive">{String(commentError)}</p>
+          )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">{content.length}/2000</span>
+            <Button type="submit" size="sm" disabled={isSubmitting || content.trim().length === 0}>
+              {isSubmitting ? "Submitting…" : "Post Comment"}
+            </Button>
+          </div>
+        </commentFetcher.Form>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          <Link to={`/courses/${courseSlug}`} className="underline hover:text-foreground">
+            Enroll in this course
+          </Link>{" "}
+          to join the discussion.
+        </p>
+      )}
     </div>
   );
 }

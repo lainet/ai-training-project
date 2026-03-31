@@ -34,6 +34,12 @@ import {
   moveLessonToModule,
 } from "~/services/lessonService";
 import { getEnrollmentCountForCourse, getCourseEnrolledStudents } from "~/services/enrollmentService";
+import {
+  approveCourseComment,
+  getCourseCommentById,
+  getPendingCourseComments,
+  rejectCourseComment,
+} from "~/services/commentService";
 import { calculateProgress } from "~/services/progressService";
 import { getQuizByLessonId, getBestAttempt } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
@@ -55,10 +61,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import {
   ArrowLeft,
   BookOpen,
+  Check,
   Clock,
   Eye,
   FileEdit,
   GripVertical,
+  MessageSquare,
   Pencil,
   Plus,
   Save,
@@ -69,7 +77,9 @@ import {
   Award,
   Globe,
   FileText,
+  X,
 } from "lucide-react";
+import { Form } from "react-router";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
@@ -94,6 +104,8 @@ const courseEditorActionSchema = z.discriminatedUnion("intent", [
   z.object({ intent: z.literal("move-lesson"), lessonId: z.coerce.number().int(), targetModuleId: z.coerce.number().int(), targetPosition: z.coerce.number().int() }),
   z.object({ intent: z.literal("delete-lesson"), lessonId: z.coerce.number().int() }),
   z.object({ intent: z.literal("update-sales-copy"), salesCopy: z.string().optional() }),
+  z.object({ intent: z.literal("approve-course-comment"), commentId: z.coerce.number().int() }),
+  z.object({ intent: z.literal("reject-course-comment"), commentId: z.coerce.number().int() }),
 ]);
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
@@ -184,8 +196,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   });
 
   const quizCount = lessonQuizzes.length;
+  const pendingComments = getPendingCourseComments(courseId);
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  return { course, lessonCount, enrollmentCount, students, quizCount, pendingComments };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -355,6 +368,21 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "update-sales-copy") {
     updateCourseSalesCopy(courseId, parsed.data.salesCopy || null);
     return { success: true, field: "sales-copy" };
+  }
+
+  if (intent === "approve-course-comment" || intent === "reject-course-comment") {
+    const { commentId } = parsed.data as { commentId: number };
+    const comment = getCourseCommentById(commentId);
+    if (!comment || comment.courseId !== courseId) {
+      throw data("Comment not found.", { status: 404 });
+    }
+    if (intent === "approve-course-comment") {
+      approveCourseComment(commentId);
+      return { moderationSuccess: "approved" as const };
+    } else {
+      rejectCourseComment(commentId);
+      return { moderationSuccess: "rejected" as const };
+    }
   }
 
   throw data("Invalid action.", { status: 400 });
@@ -983,8 +1011,9 @@ function statusBadgeColor(status: string) {
 
 export default function InstructorCourseEditor({
   loaderData,
+  actionData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } = loaderData;
+  const { course, lessonCount, enrollmentCount, students, quizCount, pendingComments } = loaderData;
   const statusFetcher = useFetcher();
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
@@ -1048,6 +1077,13 @@ export default function InstructorCourseEditor({
       toast.error(pppFetcher.data.error);
     }
   }, [pppFetcher.state, pppFetcher.data]);
+
+  useEffect(() => {
+    if (actionData && "moderationSuccess" in actionData) {
+      if (actionData.moderationSuccess === "approved") toast.success("Comment approved.");
+      else if (actionData.moderationSuccess === "rejected") toast.success("Comment rejected.");
+    }
+  }, [actionData]);
 
   function handleSalesCopySave() {
     salesCopyFetcher.submit(
@@ -1192,6 +1228,15 @@ export default function InstructorCourseEditor({
           <TabsTrigger value="students">
             <Users className="size-4" />
             Students
+          </TabsTrigger>
+          <TabsTrigger value="comments">
+            <MessageSquare className="size-4" />
+            Comments
+            {pendingComments.length > 0 && (
+              <span className="ml-1.5 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                {pendingComments.length}
+              </span>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -1650,6 +1695,55 @@ export default function InstructorCourseEditor({
                 </div>
               </CardContent>
             </Card>
+          )}
+        </TabsContent>
+
+        {/* Comments Moderation Tab */}
+        <TabsContent value="comments" className="mt-6">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold">Pending Course Comments</h2>
+            <p className="text-sm text-muted-foreground">
+              Approve or reject student comments before they appear publicly on the course page.
+            </p>
+          </div>
+
+          {pendingComments.length === 0 ? (
+            <Card>
+              <CardContent className="py-8 text-center">
+                <MessageSquare className="mx-auto mb-3 size-8 text-muted-foreground/50" />
+                <p className="text-muted-foreground">No comments awaiting moderation.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {pendingComments.map((c) => (
+                <Card key={c.id}>
+                  <CardContent className="p-4">
+                    <div className="mb-2 flex items-baseline gap-2">
+                      <span className="text-sm font-medium">{c.userName}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(c.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    <p className="mb-3 text-sm text-foreground/90 whitespace-pre-wrap">{c.content}</p>
+                    <div className="flex gap-2">
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="approve-course-comment" />
+                        <input type="hidden" name="commentId" value={c.id} />
+                        <Button type="submit" size="sm" variant="outline" className="text-green-700 hover:bg-green-50 hover:text-green-800 dark:text-green-400 dark:hover:bg-green-950">
+                          <Check className="mr-1.5 size-3.5" />Approve
+                        </Button>
+                      </Form>
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="reject-course-comment" />
+                        <input type="hidden" name="commentId" value={c.id} />
+                        <Button type="submit" size="sm" variant="outline" className="text-red-700 hover:bg-red-50 hover:text-red-800 dark:text-red-400 dark:hover:bg-red-950">
+                          <X className="mr-1.5 size-3.5" />Reject
+                        </Button>
+                      </Form>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           )}
         </TabsContent>
       </Tabs>
