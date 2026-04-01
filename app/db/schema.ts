@@ -301,6 +301,19 @@ export const lessonComments = sqliteTable("lesson_comments", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
+export const lessonBookmarks = sqliteTable("lesson_bookmarks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id),
+  lessonId: integer("lesson_id")
+    .notNull()
+    .references(() => lessons.id),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
 export const courseComments = sqliteTable("course_comments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   courseId: integer("course_id")
